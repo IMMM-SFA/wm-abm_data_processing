@@ -16,7 +16,7 @@ pd.set_option('display.expand_frame_repr', False)  # Modifies pandas settings to
 
 # Load CDL observed crop data as a pandas dataframe. CDL data has been aggregated to 1/8 degree resolution and assigned
 # to GCAM crop categories as a pre-processing step in GIS.
-cdl = pd.read_csv('data/all_nldas_cdl_data.csv')
+cdl = pd.read_csv('data/all_nldas_cdl_data_v2.txt')
 
 #cdl_states = pd.read_csv('cdl_regions_join.csv')
 
@@ -112,12 +112,21 @@ cdl_states_total = cdl_states_select_year.groupby(['NLDAS_ID'], as_index=False).
 cdl_states_total = cdl_states_total.set_index('NLDAS_ID')
 
 notavail = cdl_states_select_year[(cdl_states_select_year['GCAM_name']) == 'NotAvailable'].set_index('NLDAS_ID')
-rock = cdl_states_select_year[(cdl_states_select_year['GCAM_name']) == 'RockIceDesert'].set_index('NLDAS_ID')
-urban = cdl_states_select_year[(cdl_states_select_year['GCAM_name']) == 'UrbanLand'].set_index('NLDAS_ID')
+notavail = notavail.rename(columns={"value": "notavail"})
 
-cdl_states_available = cdl_states_total - notavail - rock - urban
-cdl_states_available = cdl_states_available['value']
-cdl_states_available = cdl_states_available[~cdl_states_available.index.duplicated(keep='first')]
+rock = cdl_states_select_year[(cdl_states_select_year['GCAM_name']) == 'RockIceDesert'].set_index('NLDAS_ID')
+rock = rock.rename(columns={"value": "rock"})
+
+urban = cdl_states_select_year[(cdl_states_select_year['GCAM_name']) == 'UrbanLand'].set_index('NLDAS_ID')
+urban = urban.rename(columns={"value": "urban"})
+
+cdl_states_total = pd.merge(cdl_states_total, notavail[['notavail']],left_index=True,right_index=True,how='left')
+cdl_states_total = pd.merge(cdl_states_total, rock[['rock']],left_index=True,right_index=True,how='left')
+cdl_states_total = pd.merge(cdl_states_total, urban[['urban']],left_index=True,right_index=True,how='left')
+
+cdl_states_total['avail'] = cdl_states_total['value'] - cdl_states_total['urban'] - cdl_states_total['rock'] - cdl_states_total['notavail']
+
+cdl_states_total = cdl_states_total[~cdl_states_total.index.duplicated(keep='first')]
 
 # Extract required data from USDA budget dataframe
 
@@ -231,7 +240,7 @@ crop_name_map = {'corn': {'gcam': 'Corn', 'budget': 'Corn', 'nir': 'Corn for gra
                  'other_grain': {'gcam': 'OtherGrain', 'budget': 'Sorghum', 'nir': 'Sorghum for grain or seed', 'irrigation': 'Sorghum for grain or seed'},
                  'fiber_crop': {'gcam': 'FiberCrop', 'budget': 'Cotton', 'nir': 'All cotton', 'irrigation': 'All cotton'},
                  'fodder_grass': {'gcam': 'FodderGrass', 'budget': 'Sorghum Hay', 'nir': 'All other hay (dry hay, greenchop, and silage)', 'irrigation': 'All other hay (dry hay, greenchop, and silage)'},
-                 'fodder_herb': {'gcam': 'FodderHerb', 'budget': 'Corn', 'nir': 'Corn for silage or greenchop', 'irrigation': 'Corn for silage or greenchop'},
+                 #'fodder_herb': {'gcam': 'FodderHerb', 'budget': 'Corn', 'nir': 'Corn for silage or greenchop', 'irrigation': 'Corn for silage or greenchop'},
                  'misc_crop': {'gcam': 'MiscCrop', 'budget': 'Peanut', 'nir': 'Peanuts for nuts', 'irrigation': 'Peanuts for nuts'}
                  }
 
@@ -240,14 +249,14 @@ crop_name_map = {'corn': {'gcam': 'Corn', 'budget': 'Corn', 'nir': 'Corn for gra
 #
 usda_unassigned = {'Peanuts for nuts': ['Beans, dry edible', 'Land in vegetables', 'Sweet corn', 'Tomatoes', 'Lettuce and romaine', 'Land in orchards, vineyards, and nut trees', 'All berries', 'All other crops (see text)'],
                    'Sorghum for grain or seed': ['Other small grains (barley, oats, rye, etc.)'],
-                   'Corn for silage or greenchop': ['Alfalfa and alfalfa mixtures (dry hay, greenchop, and silage)'],
-                    'All other hay (dry hay, greenchop, and silage)': ['Pastureland, all types'],
+                   #'Corn for silage or greenchop': ['Alfalfa and alfalfa mixtures (dry hay, greenchop, and silage)'],
+                    'All other hay (dry hay, greenchop, and silage)': ['Pastureland, all types','Corn for silage or greenchop','Alfalfa and alfalfa mixtures (dry hay, greenchop, and silage)'],
                    }
 
 #### Step 5 - Loop through crops and run table joins, calculations, etc.
 first = True
 # Initiate for loop for each GCAM crop category
-for key2, value in crop_name_map.iteritems():
+for key2, value in crop_name_map.items():
 
 
     # Extract subset of data for crop from the CDL data table
@@ -311,18 +320,18 @@ for key2, value in crop_name_map.iteritems():
     nir_select = nir[(nir['Crop']==value['nir'])]
     cdl_states_merge = pd.merge(cdl_states_merge, nir_select[['Geography','Irrigation (acre-ft/acre)']],left_on='State_Name',right_on='Geography',how='left')
 
-    # For CDL rows that are missing NIR values after the join, fill in with 0 or United States averages
+    # For CDL rows that are missing NIR values after the join, fill in with 0 or United States averages where appropriate
 
     # Replace '-' entries with 0
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '-',
                                               0, cdl_states_merge['Irrigation (acre-ft/acre)'])
-    # Replace '(D)' entries (could not be reported to give away identify of farm)
+    # Replace '(D)' entries with US average (could not be reported to give away identify of farm)
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '(D)',
                                               nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
-    # Replace '(NA)' entries (could not be reported to give away identify of farm)
+    # Replace '(NA)' entries with US average (could not be reported to give away identify of farm)
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == 'NA',
                                               nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
-    # Replace '' entries (could not be reported to give away identify of farm)
+    # Replace '' entries with US average (could not be reported to give away identify of farm)
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '',
                                               nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
 
@@ -333,7 +342,7 @@ for key2, value in crop_name_map.iteritems():
                                 left_on='State_Name', right_on='Geography', how='left')
     cdl_states_merge = pd.merge(cdl_states_merge, cdl_states_proportion, left_on='State_Name', right_on='state', how='left')
 
-    # For CDL rows that are missing Irrigation data after the join, fill in with 0 or a large negative value. The large
+    # For CDL rows that are missing Irrigation data after the join, fill in with 0 (where appropriate) or a large negative value. The large
     # negative value will indicate that the irrigated and non-irrigated areas needs to be estimated
     keys = ['Area Irrigated (Acres)', 'Area Non-Irrigated (Acres)']
 
@@ -445,6 +454,47 @@ for key2, value in crop_name_map.iteritems():
     else:
         cdl_states_all = pd.concat([cdl_states_all, cdl_states_merge])
 
+#### Step X - Identify cells for cropped areas are greater than available area and proportionally re-distribute to other cells in the state
+aggregation_functions = {'area_irrigated': 'sum','area_nonirrigated': 'sum'}
+cdl_states_test_area = cdl_states_all.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
+cdl_states_test_area['total_area_sqft'] = (cdl_states_test_area['area_irrigated'] + cdl_states_test_area['area_nonirrigated'])*43560
+cdl_states_total = cdl_states_total.reset_index()
+cdl_states_total = pd.merge(cdl_states_total, cdl_states_test_area,left_on='NLDAS_ID',right_on='NLDAS_ID',how='left')
+cdl_states_total['crop_divide_avail'] = cdl_states_total['total_area_sqft'] / cdl_states_total['avail'] # identify those cells with crop area greater than available land area
+cdl_states_total = pd.merge(cdl_states_total, nldas_lookup[['NLDAS_ID', 'State', 'State_Name']], on='NLDAS_ID', how='left') # join table above with state designations
+
+cdl_states_total_subset = cdl_states_total[(cdl_states_total.State=='CA')] # subset state (eventually incorporate into loop)
+#cdl_states_total_subset = cdl_states_total_subset[(cdl_states_total_subset.crop_divide_avail > 1)] # subset only those cells with crop areas that are greater than avail land area
+
+cdl_states_all_subset = cdl_states_all[(cdl_states_all.State=='CA')] # subset main CDL table by state
+cdl_states_all_subset = pd.merge(cdl_states_all_subset, cdl_states_total_subset[['NLDAS_ID','avail','crop_divide_avail']], left_on='NLDAS_ID',right_on='NLDAS_ID',how='left') # join excess crop areas to main CDL table
+cdl_states_all_subset['area_irrigated_excess'] = np.where(cdl_states_all_subset['crop_divide_avail'] > 1, # calculate excess area_irrigated and area_nonirrigated for re-distribution
+    cdl_states_all_subset['area_irrigated'] - (cdl_states_all_subset['area_irrigated'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)), 0)
+cdl_states_all_subset['area_irrigated_excess'] = cdl_states_all_subset['area_irrigated_excess'].fillna(0)
+cdl_states_all_subset['area_nonirrigated_excess'] = np.where(cdl_states_all_subset['crop_divide_avail'] > 1, # calculate excess area_irrigated and area_nonirrigated for re-distribution
+    cdl_states_all_subset['area_nonirrigated'] - (cdl_states_all_subset['area_nonirrigated'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)), 0)
+cdl_states_all_subset['area_nonirrigated_excess'] = cdl_states_all_subset['area_nonirrigated_excess'].fillna(0)
+
+cdl_states_all_subset['area_irrigated_wcushion'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1, cdl_states_all_subset['area_irrigated'], 0)
+
+# determine total crop area that needs to be re-distributed
+aggregation_functions = {'area_irrigated_excess': 'sum','area_nonirrigated_excess': 'sum', 'area_irrigated_wcushion': 'sum'}
+crop_redistribute = cdl_states_all_subset.groupby(['GCAM_name'], as_index=False).aggregate(aggregation_functions)
+crop_redistribute = crop_redistribute.rename(columns={'area_irrigated_excess': 'area_irrigated_excess_sum', 'area_nonirrigated_excess': 'area_nonirrigated_excess_sum', 'area_irrigated_wcushion':'area_irrigated_wcushion_sum'})
+cdl_states_all_subset = pd.merge(cdl_states_all_subset, crop_redistribute, left_on='GCAM_name', right_on='GCAM_name', how='left')
+
+# re-distribute crop areas by proportion
+cdl_states_all_subset['area_irrigated_corrected'] = 0 # calculate area to add to cells with a cushion, and area to subtract from cells with an excess
+cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail']<1), 'area_irrigated_corrected'] = \
+    cdl_states_all_subset['area_irrigated'] + (cdl_states_all_subset['area_irrigated_excess_sum'] * cdl_states_all_subset['area_irrigated'] /
+    cdl_states_all_subset['area_irrigated_wcushion_sum'].where(cdl_states_all_subset.area_irrigated_wcushion_sum !=0, np.nan))
+cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail']>1) & (cdl_states_all_subset['crop_divide_avail'] != 0), 'area_irrigated_corrected'] = \
+    cdl_states_all_subset['area_irrigated'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)
+cdl_states_all_subset['area_irrigated_corrected'] = cdl_states_all_subset['area_irrigated_corrected'].fillna(0)
+
+#!JY restart here! Institute loop (excess areas are still really large, need to check Rice and MiscCrop assignments)
+
+
 #### Step 6 - Allocate irrigation to groundwater and surface water using statewide averages (!JY: data sources to make better assumptions?)
 cdl_states_all = pd.merge(cdl_states_all, water_perc[['State','Groundwater','SW Total', 'GW cost', 'SW cost adj']],left_on='State_Name', right_on='State',how='left')
 cdl_states_all['area_irrigated_gw'] = cdl_states_all['area_irrigated'] * cdl_states_all['Groundwater']
@@ -454,7 +504,7 @@ cdl_states_all['area_irrigated_sw'] = cdl_states_all['area_irrigated'] * cdl_sta
 # Calculate perceived costs (i.e., exclude opportunity costs)
 cdl_states_all['perceived_cost'] = cdl_states_all['total costs'] - cdl_states_all['opplabor'] - cdl_states_all['oppland']
 
-# For negatve profits, adjust total land cost to assume profit is zero
+# For negative profits, adjust total land cost to assume profit is zero
 cdl_states_all['profit'] = (cdl_states_all['yield']*cdl_states_all['price']) - cdl_states_all['perceived_cost']
 # !JY: consider adding 10 percent to below?
 cdl_states_all['perceived_cost_adj'] = np.where(cdl_states_all['profit'] < 1, cdl_states_all['perceived_cost'] + cdl_states_all['profit'] - 1, cdl_states_all['perceived_cost'])
@@ -476,7 +526,7 @@ for state in states_list:
     gw_cost_perc = gw_cost_perc_df.mean()
     sw_cost_perc = sw_cost_perc_df.mean()
     if gw_cost_perc + sw_cost_perc > 1:
-        print state
+        print(state)
     cdl_states_all.loc[(cdl_states_all['land_only_costs']<0) & (cdl_states_all['State_Name']==state), 'GW cost adj'] = gw_cost_perc * cdl_states_all['perceived_cost_adj']
     cdl_states_all.loc[(cdl_states_all['land_only_costs']<0) & (cdl_states_all['State_Name']==state), 'SW cost adj 2'] = sw_cost_perc * cdl_states_all['perceived_cost_adj']
 
