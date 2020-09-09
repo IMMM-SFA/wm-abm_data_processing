@@ -1,7 +1,8 @@
 import pandas as pd
 pd.set_option('display.expand_frame_repr', False)
 
-cdl_lookup = pd.read_csv('//PNL/Users/YOON644/Projects/wm abm data/nldas cdl/cdl_gcam_lookup_v2.csv')
+#cdl_lookup = pd.read_csv('//PNL/Users/YOON644/Projects/wm abm data/nldas cdl/cdl_gcam_lookup_v2.csv')
+cdl_lookup = pd.read_csv('data/cdl_gcam_lookup_v3_notavailcorr.csv')
 
 for year in range(2008,2018):
     name = 'cdl' + str(year) + '_clean.csv'

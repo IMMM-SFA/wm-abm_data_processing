@@ -470,10 +470,7 @@ first_state = True
 
 for state in cdl_states_all.State.unique():
 
-    # if pd.isnull(state) or state=='UT' or state=='ID' or state=='MT' or state=='AZ' or state == 'CA':
-    #     continue
-
-    if state != 'AR':
+    if pd.isnull(state):
         continue
 
     if first_state == True:
@@ -509,54 +506,90 @@ for state in cdl_states_all.State.unique():
             cdl_states_all_subset = cdl_states_all[(cdl_states_all.State == state)]  # subset main CDL table by state
             cdl_states_all_subset['area_irrigated_corrected'] = cdl_states_all_subset['area_irrigated']
             cdl_states_all_subset['area_nonirrigated_corrected'] = cdl_states_all_subset['area_nonirrigated']
+            cdl_states_total_subset = cdl_states_total_subset.rename(columns={'area_irrigated': 'area_irrigated_corrected_cellsum',
+                                                                              'area_nonirrigated': 'area_nonirrigated_corrected_cellsum'})
         if loop_no != 1:
-            cdl_states_all_subset = cdl_states_all_subset.drop(['avail','crop_divide_avail'], axis=1)
-        cdl_states_all_subset = pd.merge(cdl_states_all_subset, cdl_states_total_subset[['NLDAS_ID','avail','crop_divide_avail']], left_on='NLDAS_ID',right_on='NLDAS_ID',how='left') # join excess crop areas to main CDL table
+            cdl_states_all_subset = cdl_states_all_subset.drop(['avail','crop_divide_avail','area_irrigated_corrected_cellsum','area_nonirrigated_corrected_cellsum','total_area_sqft'], axis=1)
+            cdl_states_total_subset = cdl_states_total_subset.rename(columns={'area_irrigated_corrected': 'area_irrigated_corrected_cellsum',
+                                                                              'area_nonirrigated_corrected': 'area_nonirrigated_corrected_cellsum'})
 
-        cdl_states_all_subset['area_irrigated_excess'] = np.where(cdl_states_all_subset['crop_divide_avail'] > 1, # calculate excess area_irrigated and area_nonirrigated for re-distribution
+        cdl_states_all_subset = pd.merge(cdl_states_all_subset, cdl_states_total_subset[['NLDAS_ID','avail','crop_divide_avail','area_irrigated_corrected_cellsum','area_nonirrigated_corrected_cellsum', 'total_area_sqft']], left_on='NLDAS_ID',right_on='NLDAS_ID',how='left') # join excess crop areas to main CDL table
+
+        # determine the amount of excess crop area that needs to be re-allocated
+        cdl_states_all_subset['area_irrigated_excess'] = np.where(cdl_states_all_subset['crop_divide_avail'] > 1.001, # calculate excess area_irrigated and area_nonirrigated for re-distribution (1.001 to account for rounding errors)
             cdl_states_all_subset['area_irrigated_corrected'] - (cdl_states_all_subset['area_irrigated_corrected'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)), 0)
         cdl_states_all_subset['area_irrigated_excess'] = cdl_states_all_subset['area_irrigated_excess'].fillna(0)
-        cdl_states_all_subset['area_nonirrigated_excess'] = np.where(cdl_states_all_subset['crop_divide_avail'] > 1, # calculate excess area_irrigated and area_nonirrigated for re-distribution
+        cdl_states_all_subset['area_nonirrigated_excess'] = np.where(cdl_states_all_subset['crop_divide_avail'] > 1.001, # calculate excess area_irrigated and area_nonirrigated for re-distribution
             cdl_states_all_subset['area_nonirrigated_corrected'] - (cdl_states_all_subset['area_nonirrigated_corrected'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)), 0)
         cdl_states_all_subset['area_nonirrigated_excess'] = cdl_states_all_subset['area_nonirrigated_excess'].fillna(0)
 
-        cdl_states_all_subset['area_irrigated_wcushion'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1, cdl_states_all_subset['area_irrigated_corrected'], 0)
-        cdl_states_all_subset['area_nonirrigated_wcushion'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1, cdl_states_all_subset['area_nonirrigated_corrected'], 0)
+        # determine the amount of additional area that can be allocated to cells with a cushion per crop category, irrigation category
+        cdl_states_all_subset['area_irrigated_alloreserve'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1,
+            (cdl_states_all_subset['area_irrigated_corrected']/np.where(cdl_states_all_subset['area_irrigated_corrected_cellsum']+cdl_states_all_subset['area_nonirrigated_corrected_cellsum']==0,np.nan,cdl_states_all_subset['area_irrigated_corrected_cellsum']+cdl_states_all_subset['area_nonirrigated_corrected_cellsum'])) * ((cdl_states_all_subset['avail']- cdl_states_all_subset['total_area_sqft'])/43560), 0)
+        cdl_states_all_subset['area_irrigated_alloreserve'] = cdl_states_all_subset['area_irrigated_alloreserve'].fillna(0)
 
-        # determine total crop area that needs to be re-distributed
-        aggregation_functions = {'area_irrigated_excess': 'sum','area_nonirrigated_excess': 'sum', 'area_irrigated_wcushion': 'sum', 'area_nonirrigated_wcushion': 'sum'}
-        crop_redistribute = cdl_states_all_subset.groupby(['GCAM_name'], as_index=False).aggregate(aggregation_functions)
-        crop_redistribute = crop_redistribute.rename(columns={'area_irrigated_excess': 'area_irrigated_excess_sum', 'area_nonirrigated_excess': 'area_nonirrigated_excess_sum',
-                                                              'area_irrigated_wcushion':'area_irrigated_wcushion_sum', 'area_nonirrigated_wcushion':'area_nonirrigated_wcushion_sum'})
+        cdl_states_all_subset['area_nonirrigated_alloreserve'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1,
+            (cdl_states_all_subset['area_nonirrigated_corrected']/np.where(cdl_states_all_subset['area_irrigated_corrected_cellsum']+cdl_states_all_subset['area_nonirrigated_corrected_cellsum']==0,np.nan,cdl_states_all_subset['area_irrigated_corrected_cellsum']+cdl_states_all_subset['area_nonirrigated_corrected_cellsum'])) * ((cdl_states_all_subset['avail']- cdl_states_all_subset['total_area_sqft'])/43560), 0)
+        cdl_states_all_subset['area_nonirrigated_alloreserve'] = cdl_states_all_subset['area_nonirrigated_alloreserve'].fillna(0)
+
+        # determine the existing crop areas for cells that have extra available land area
+        # cdl_states_all_subset['area_irrigated_wcushion'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1, cdl_states_all_subset['area_irrigated_corrected'], 0)
+        # cdl_states_all_subset['area_nonirrigated_wcushion'] = np.where(cdl_states_all_subset['crop_divide_avail'] < 1, cdl_states_all_subset['area_nonirrigated_corrected'], 0)
+
+        # determine total crop area that needs to be re-distributed and subtract out excess crop areas
+        if loop_no == 1:
+            aggregation_functions = {'area_irrigated_excess': 'sum','area_nonirrigated_excess': 'sum', 'area_irrigated_alloreserve': 'sum', 'area_nonirrigated_alloreserve': 'sum'}
+            # aggregation_functions = {'area_irrigated_excess': 'sum','area_nonirrigated_excess': 'sum', 'area_irrigated_alloreserve': 'sum', 'area_nonirrigated_alloreserve': 'sum',
+            #                          'area_irrigated_wcushion': 'sum', 'area_nonirrigated_wcushion': 'sum'}
+            crop_redistribute = cdl_states_all_subset.groupby(['GCAM_name'], as_index=False).aggregate(aggregation_functions)
+            crop_redistribute = crop_redistribute.rename(columns={'area_irrigated_excess': 'area_irrigated_excess_sum', 'area_nonirrigated_excess': 'area_nonirrigated_excess_sum',
+                                                                  'area_irrigated_alloreserve':'area_irrigated_alloreserve_sum', 'area_nonirrigated_alloreserve':'area_nonirrigated_alloreserve_sum'})
+            # crop_redistribute = crop_redistribute.rename(columns={'area_irrigated_excess': 'area_irrigated_excess_sum', 'area_nonirrigated_excess': 'area_nonirrigated_excess_sum',
+            #                                                       'area_irrigated_allorserve':'area_irrigated_alloreserve_sum', 'area_nonirrigated_alloreserve':'area_nonirrigated_alloreserve_sum',
+            #                                                       'area_irrigated_wcushion': 'area_irrigated_wcushion_sum', 'area_nonirrigated_wcushion': 'area_nonirrigated_wcushion_sum'})
+            cdl_states_all_subset.loc[cdl_states_all_subset.area_irrigated_excess > 0, 'area_irrigated_corrected'] = cdl_states_all_subset['area_irrigated_corrected'] - cdl_states_all_subset['area_irrigated_excess']
+            print(crop_redistribute)
+
         if loop_no != 1:
-            cdl_states_all_subset = cdl_states_all_subset.drop(['area_irrigated_excess_sum', 'area_nonirrigated_excess_sum', 'area_irrigated_wcushion_sum', 'area_nonirrigated_wcushion_sum'], axis=1)
+            aggregation_functions = {'area_irrigated_alloreserve': 'sum', 'area_nonirrigated_alloreserve': 'sum'}
+            # aggregation_functions = {'area_irrigated_alloreserve': 'sum', 'area_nonirrigated_alloreserve': 'sum',
+            #                          'area_irrigated_wcushion': 'sum', 'area_nonirrigated_wcushion': 'sum'}
+            crop_redistribute_update = cdl_states_all_subset.groupby(['GCAM_name'], as_index=False).aggregate(aggregation_functions)
+            crop_redistribute_update = crop_redistribute_update.rename(columns={'area_irrigated_alloreserve':'area_irrigated_alloreserve_sum', 'area_nonirrigated_alloreserve':'area_nonirrigated_alloreserve_sum'})
+            for c_2 in crop_redistribute.GCAM_name.unique():
+                crop_redistribute.loc[crop_redistribute.GCAM_name==c_2,'area_irrigated_alloreserve_sum'] = crop_redistribute_update[(crop_redistribute_update.GCAM_name==c_2)]['area_irrigated_alloreserve_sum']
+                crop_redistribute.loc[crop_redistribute.GCAM_name==c_2,'area_nonirrigated_alloreserve_sum'] = crop_redistribute_update[(crop_redistribute_update.GCAM_name==c_2)]['area_nonirrigated_alloreserve_sum']
+            cdl_states_all_subset = cdl_states_all_subset.drop(['area_irrigated_excess_sum', 'area_nonirrigated_excess_sum', 'area_irrigated_alloreserve_sum', 'area_nonirrigated_alloreserve_sum'], axis=1)
+
         cdl_states_all_subset = pd.merge(cdl_states_all_subset, crop_redistribute, left_on='GCAM_name', right_on='GCAM_name', how='left')
 
-        # re-distribute crop areas by proportion (!JY do this on a crop by crop basis? -- i.e., determine available area by crop... )
-        cdl_states_all_subset['area_irrigated_corrected_temp'] = 0 # calculate area to add to cells with a cushion, and area to subtract from cells with an excess
-        cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail'] == 1), 'area_irrigated_corrected_temp'] = cdl_states_all_subset['area_irrigated_corrected']
-        cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail']<1), 'area_irrigated_corrected_temp'] = \
-            cdl_states_all_subset['area_irrigated_corrected'] + (cdl_states_all_subset['area_irrigated_excess_sum'] * cdl_states_all_subset['area_irrigated_corrected'] /
-            cdl_states_all_subset['area_irrigated_wcushion_sum'].where(cdl_states_all_subset.area_irrigated_wcushion_sum !=0, np.nan))
-        cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail']>1) & (cdl_states_all_subset['crop_divide_avail'] != 0), 'area_irrigated_corrected_temp'] = \
-            cdl_states_all_subset['area_irrigated_corrected'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)
-        cdl_states_all_subset['area_irrigated_corrected_temp'] = cdl_states_all_subset['area_irrigated_corrected_temp'].fillna(0)
+        # loop through crop types and distribute excess crop areas by proportion
+        for c in cdl_states_all_subset.GCAM_name.unique():
 
-        cdl_states_all_subset['area_nonirrigated_corrected_temp'] = 0 # calculate area to add to cells with a cushion, and area to subtract from cells with an excess
-        cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail'] == 1), 'area_nonirrigated_corrected_temp'] = cdl_states_all_subset['area_nonirrigated_corrected']
-        cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail']<1), 'area_nonirrigated_corrected_temp'] = \
-            cdl_states_all_subset['area_nonirrigated_corrected'] + (cdl_states_all_subset['area_nonirrigated_excess_sum'] * cdl_states_all_subset['area_nonirrigated_corrected'] /
-            cdl_states_all_subset['area_nonirrigated_wcushion_sum'].where(cdl_states_all_subset.area_nonirrigated_wcushion_sum !=0, np.nan))
-        cdl_states_all_subset.loc[(cdl_states_all_subset['crop_divide_avail']>1) & (cdl_states_all_subset['crop_divide_avail'] != 0), 'area_nonirrigated_corrected_temp'] = \
-            cdl_states_all_subset['area_nonirrigated_corrected'] / cdl_states_all_subset['crop_divide_avail'].where(cdl_states_all_subset.crop_divide_avail !=0, np.nan)
-        cdl_states_all_subset['area_nonirrigated_corrected_temp'] = cdl_states_all_subset['area_nonirrigated_corrected_temp'].fillna(0)
+            # determine the amount of statewide crop excess to assign to individual cells based on existing areas
+            cdl_states_all_subset['area_irrigated_excess_allocation'] = 0
+            cdl_states_all_subset.loc[cdl_states_all_subset.GCAM_name==c, 'area_irrigated_excess_allocation'] = \
+                cdl_states_all_subset['area_irrigated_excess_sum'] * (cdl_states_all_subset['area_irrigated_corrected']/cdl_states_all_subset['area_irrigated_alloreserve_sum'].where(cdl_states_all_subset.area_irrigated_alloreserve_sum != 0, np.nan))
+            cdl_states_all_subset['area_irrigated_excess_allocation'] = cdl_states_all_subset['area_irrigated_excess_allocation'].fillna(0)
+            cdl_states_all_subset['area_nonirrigated_excess_allocation'] = 0
+            cdl_states_all_subset.loc[cdl_states_all_subset.GCAM_name==c, 'area_nonirrigated_excess_allocation'] = \
+                cdl_states_all_subset['area_nonirrigated_excess_sum'] * (cdl_states_all_subset['area_nonirrigated_corrected']/cdl_states_all_subset['area_nonirrigated_alloreserve_sum'].where(cdl_states_all_subset.area_nonirrigated_alloreserve_sum != 0, np.nan))
+            cdl_states_all_subset['area_nonirrigated_excess_allocation'] = cdl_states_all_subset['area_nonirrigated_excess_allocation'].fillna(0)
 
-        # replace corrected areas in main table
-        # if loop_no != 1:
-        #     cdl_states_all = cdl_states_all.drop(['area_irrigated_corrected_temp','area_nonirrigated_corrected_temp'], axis=1)
-        # cdl_states_all= pd.merge(cdl_states_all, cdl_states_all_subset[['NLDAS_ID', 'GCAM_name','area_irrigated_corrected_temp','area_nonirrigated_corrected_temp']], left_on=['NLDAS_ID', 'GCAM_name'], right_on=['NLDAS_ID','GCAM_name'], how='left')
-        cdl_states_all_subset['area_irrigated_corrected'] = cdl_states_all_subset['area_irrigated_corrected_temp']
-        cdl_states_all_subset['area_nonirrigated_corrected'] = cdl_states_all_subset['area_nonirrigated_corrected_temp']
+            # check whether amounts above are greater than the reserved area for the crops (take the minimum of the two)
+            cdl_states_all_subset['area_irrigated_toadd'] = 0
+            cdl_states_all_subset.loc[cdl_states_all_subset.GCAM_name==c, 'area_irrigated_toadd'] = np.where(cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_irrigated_excess_allocation'] > cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_irrigated_alloreserve'],
+                    cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_irrigated_alloreserve'], cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_irrigated_excess_allocation'])
+            cdl_states_all_subset['area_nonirrigated_toadd'] = 0
+            cdl_states_all_subset.loc[cdl_states_all_subset.GCAM_name==c, 'area_nonirrigated_toadd'] = np.where(cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_nonirrigated_excess_allocation'] > cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_nonirrigated_alloreserve'],
+                    cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_nonirrigated_alloreserve'], cdl_states_all_subset[(cdl_states_all_subset.GCAM_name==c)]['area_nonirrigated_excess_allocation'])
+
+            # add allocated crop areas to cells
+            cdl_states_all_subset['area_irrigated_corrected'] = cdl_states_all_subset['area_irrigated_corrected'] + cdl_states_all_subset['area_irrigated_toadd']
+
+            # subtract out allocated crop areas from statewide excess sums
+            crop_redistribute.loc[crop_redistribute.GCAM_name==c, 'area_irrigated_excess_sum'] = crop_redistribute['area_irrigated_excess_sum'] - cdl_states_all_subset['area_irrigated_toadd'].sum()
+            crop_redistribute.loc[crop_redistribute.GCAM_name==c, 'area_nonirrigated_excess_sum'] = crop_redistribute['area_nonirrigated_excess_sum'] - cdl_states_all_subset['area_nonirrigated_toadd'].sum()
 
         #Re-check whether cropped areas greater than available land area
         aggregation_functions = {'area_irrigated': 'sum','area_nonirrigated': 'sum','area_irrigated_corrected': 'sum','area_nonirrigated_corrected': 'sum'}
@@ -567,12 +600,17 @@ for state in cdl_states_all.State.unique():
         cdl_states_total_temp['crop_divide_avail'] = cdl_states_total_temp['total_area_sqft'] / cdl_states_total_temp['avail'] # identify those cells with crop area greater than available land area
         cdl_states_total_temp = pd.merge(cdl_states_total_temp, nldas_lookup[['NLDAS_ID', 'State', 'State_Name']], on='NLDAS_ID', how='left') # join table above with state designations
 
+        print(crop_redistribute)
 
     if first_state:
         cdl_states_all_replace = cdl_states_all_subset
+        crop_redistribute_all = crop_redistribute
+        crop_redistribute['State'] = state
         first_state = False
     else:
-        cdl_states_all_replace = pd.concat([cdl_states_all_replace, cdl_states_all_subset])
+        cdl_states_all_replace = pd.concat([cdl_states_all_replace, cdl_states_all_subset],ignore_index=True)
+        crop_redistribute['State'] = state
+        crop_redistribute_all = pd.concat([crop_redistribute_all, crop_redistribute], ignore_index=True)
 
 #!JY restart here! Institute loop (excess areas are still really large, need to check Rice and MiscCrop assignments)
 
