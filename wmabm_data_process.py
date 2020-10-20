@@ -241,6 +241,7 @@ crop_name_map = {'corn': {'gcam': 'Corn', 'budget': 'Corn', 'nir': 'Corn for gra
                  'fiber_crop': {'gcam': 'FiberCrop', 'budget': 'Cotton', 'nir': 'All cotton', 'irrigation': 'All cotton'},
                  'fodder_grass': {'gcam': 'FodderGrass', 'budget': 'Sorghum Hay', 'nir': 'All other hay (dry hay, greenchop, and silage)', 'irrigation': 'All other hay (dry hay, greenchop, and silage)'},
                  #'fodder_herb': {'gcam': 'FodderHerb', 'budget': 'Corn', 'nir': 'Corn for silage or greenchop', 'irrigation': 'Corn for silage or greenchop'},
+                 'fodder_herb': {'gcam': 'FodderHerb', 'budget': 'Corn', 'nir': 'Corn for silage or greenchop', 'irrigation': 'Corn for silage or greenchop'},
                  'misc_crop': {'gcam': 'MiscCrop', 'budget': 'Peanut', 'nir': 'Peanuts for nuts', 'irrigation': 'Peanuts for nuts'}
                  }
 
@@ -339,6 +340,9 @@ for key2, value in crop_name_map.items():
                                               nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
     # Replace '' entries with US average (could not be reported to give away identify of farm)
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '',
+                                              nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
+    # Replace '' entries with US average (could not be reported to give away identify of farm)
+    cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'].isnull(),
                                               nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
 
     # Join Irrigation table to CDL table
@@ -460,11 +464,12 @@ for key2, value in crop_name_map.items():
     else:
         cdl_states_all = pd.concat([cdl_states_all, cdl_states_merge])
 
+# Replace 0 NIR values with 0.1 (to account for potential inconsistency between observed sw irrigated area and NIR)
+cdl_states_all.loc[cdl_states_all['Irrigation (acre-ft/acre)'] == 0, 'Irrigation (acre-ft/acre)'] = 0.1
+
 #### Step X - Identify cells for cropped areas are greater than available area and proportionally re-distribute to other cells in the state
 cdl_states_all['area_irrigated_corrected'] = 0
 cdl_states_all['area_nonirrigated_corrected'] = 0
-
-
 
 first_state = True
 
@@ -581,6 +586,9 @@ for state in cdl_states_all.State.unique():
 cdl_states_all = pd.merge(cdl_states_all, water_perc[['State','Groundwater','SW Total', 'GW cost', 'SW cost adj']],left_on='State_Name', right_on='State',how='left')
 cdl_states_all['area_irrigated_gw'] = cdl_states_all['area_irrigated'] * cdl_states_all['Groundwater']
 cdl_states_all['area_irrigated_sw'] = cdl_states_all['area_irrigated'] * cdl_states_all['SW Total']
+cdl_states_all['gw_irrigation_vol'] = cdl_states_all['area_irrigated_gw'] * cdl_states_all['Irrigation (acre-ft/acre)'] # GW irrigation volume in acre-ft
+cdl_states_all['sw_irrigation_vol'] = cdl_states_all['area_irrigated_sw'] * cdl_states_all['Irrigation (acre-ft/acre)'] # SW irrigation volume in acre-ft
+
 
 #### Step 7 - Check profit calculations and make adjustments
 # Calculate perceived costs (i.e., exclude opportunity costs)
@@ -624,9 +632,34 @@ cdl_states_all['profit_test'] = (cdl_states_all['yield']*cdl_states_all['price']
 cdl_states_all = cdl_states_all.dropna(subset=['State_Name'])  # Drop rows without associated state name (outside of US domain)
 cdl_states_all.NLDAS_ID.isnull().values.any()
 
+#### Calculate bias-correction surface water factor
+# Load in supply availability from historical/baseline WM run (see project wm_netcdf/hist_water_availability_abm.py for processing)
+#hist_supply = pd.read_csv('data/abm_hist_supply_avail.csv')
+hist_supply = pd.read_csv('data/abm_hist_supply_avail_usda.csv')
+aggregation_functions = {'sw_irrigation_vol': 'sum','gw_irrigation_vol': 'sum'}
+sw_irrigation_nldas = cdl_states_all.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
+sw_irrigation_nldas['sw_irrigation_m3s'] = sw_irrigation_nldas['sw_irrigation_vol'] / 25583.64
+sw_irrigation_nldas[['NLDAS_ID','sw_irrigation_m3s']].to_csv('hist_demand_for_ncdf_nirnon0.csv')
+sw_irrigation_nldas = pd.merge(sw_irrigation_nldas, hist_supply[['NLDAS_ID', 'WRM_SUPPLY_acreft']], on='NLDAS_ID', how='left') # join table above with state designations
+sw_irrigation_nldas['sw_avail_bias_corr'] = sw_irrigation_nldas['sw_irrigation_vol'] - sw_irrigation_nldas['WRM_SUPPLY_acreft']
+
+
 # Extract only relevant columns
 cdl_states_final = cdl_states_all[['NLDAS_ID','GCAM_name','CDL_id','value', 'ERS_region', 'State_Name', 'land_only_costs', 'price',
-                                     'GW cost adj', 'SW cost adj 2', 'yield', 'Yield Irrigated', 'Yield Non-Irrigated', 'area_irrigated', 'area_nonirrigated']]
+                                     'GW cost adj', 'SW cost adj 2', 'yield', 'Yield Irrigated', 'Yield Non-Irrigated', 'area_irrigated', 'area_nonirrigated',
+                                   'area_irrigated_gw','area_irrigated_sw', 'Irrigation (acre-ft/acre)']]
 
 # Export to CSV
-cdl_states_final.to_csv('cdl_states_final.csv')
+cdl_states_final.to_csv('cdl_states_final_20201005.csv')
+
+# Determine land constraint for PMP stage 1 calibration
+cdl_states_total['avail_acre'] = cdl_states_total['avail'] / 43560
+aggregation_functions = {'area_irrigated_gw': 'sum','area_nonirrigated': 'sum','area_irrigated_sw': 'sum'}
+cdl_states_irr_area_sw = cdl_states_final.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
+cdl_states_total = pd.merge(cdl_states_total, cdl_states_irr_area_sw, on='NLDAS_ID', how='left')
+cdl_states_total['avail_acre_minus_nonirr_irrgw'] = cdl_states_total['avail_acre'] - cdl_states_total['area_irrigated_gw'] - cdl_states_total['area_nonirrigated']
+cdl_states_total['max_land_constr'] = cdl_states_total[["avail_acre_minus_nonirr_irrgw", "area_irrigated_sw"]].max(axis=1)
+cdl_states_total['max_land_constr'] = cdl_states_total['max_land_constr'] * 1000  # All land areas in PMP multiplied by 1000 for precision/rounding
+max_land_constr = cdl_states_total[['NLDAS_ID','max_land_constr']]
+max_land_constr = max_land_constr.fillna(0)
+max_land_constr.to_csv('max_land_constr.csv')
