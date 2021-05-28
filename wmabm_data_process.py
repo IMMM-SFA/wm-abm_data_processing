@@ -242,7 +242,8 @@ crop_name_map = {'corn': {'gcam': 'Corn', 'budget': 'Corn', 'nir': 'Corn for gra
                  'fodder_grass': {'gcam': 'FodderGrass', 'budget': 'Sorghum Hay', 'nir': 'All other hay (dry hay, greenchop, and silage)', 'irrigation': 'All other hay (dry hay, greenchop, and silage)'},
                  #'fodder_herb': {'gcam': 'FodderHerb', 'budget': 'Corn', 'nir': 'Corn for silage or greenchop', 'irrigation': 'Corn for silage or greenchop'},
                  'fodder_herb': {'gcam': 'FodderHerb', 'budget': 'Corn', 'nir': 'Corn for silage or greenchop', 'irrigation': 'Corn for silage or greenchop'},
-                 'misc_crop': {'gcam': 'MiscCrop', 'budget': 'Peanut', 'nir': 'Peanuts for nuts', 'irrigation': 'Peanuts for nuts'}
+                 #'misc_crop': {'gcam': 'MiscCrop', 'budget': 'Peanut', 'nir': 'Peanuts for nuts', 'irrigation': 'Peanuts for nuts'}
+                 'misc_crop': {'gcam': 'MiscCrop', 'budget': 'Beets', 'nir': 'Land in vegetables', 'irrigation': 'Land in vegetables'}
                  }
 
 # If crop group from USDA Irrigation Survey does not match with one of the GCAM categories, reassign to a different
@@ -254,7 +255,7 @@ crop_name_map = {'corn': {'gcam': 'Corn', 'budget': 'Corn', 'nir': 'Corn for gra
 #                     'All other hay (dry hay, greenchop, and silage)': ['Pastureland, all types','Corn for silage or greenchop','Alfalfa and alfalfa mixtures (dry hay, greenchop, and silage)'],
 #                    }
 
-usda_unassigned = {'Peanuts for nuts': ['Beans, dry edible', 'Land in vegetables', 'Sweet corn', 'Tomatoes', 'Lettuce and romaine', 'Land in orchards, vineyards, and nut trees', 'All berries', 'All other crops (see text)'],
+usda_unassigned = {'Land in vegetables': ['Beans, dry edible', 'Peanuts for nuts', 'Sweet corn', 'Tomatoes', 'Lettuce and romaine', 'Land in orchards, vineyards, and nut trees', 'All berries', 'All other crops (see text)'],
                    'Sorghum for grain or seed': ['Other small grains (barley, oats, rye, etc.)'],
                    #'Corn for silage or greenchop': ['Alfalfa and alfalfa mixtures (dry hay, greenchop, and silage)'],
                     'All other hay (dry hay, greenchop, and silage)': ['Corn for silage or greenchop','Alfalfa and alfalfa mixtures (dry hay, greenchop, and silage)'],
@@ -330,8 +331,11 @@ for key2, value in crop_name_map.items():
     # For CDL rows that are missing NIR values after the join, fill in with 0 or United States averages where appropriate
 
     # Replace '-' entries with 0
+    # cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '-',
+    #                                           0, cdl_states_merge['Irrigation (acre-ft/acre)'])
+    # !JY! -(dash values are supposed to be 0 per USDA, we replace with US averages)
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '-',
-                                              0, cdl_states_merge['Irrigation (acre-ft/acre)'])
+                                              pd.to_numeric(nir_select['Irrigation (acre-ft/acre)'], errors='coerce').min(), cdl_states_merge['Irrigation (acre-ft/acre)'])
     # Replace '(D)' entries with US average (could not be reported to give away identify of farm)
     cdl_states_merge['Irrigation (acre-ft/acre)'] = np.where(cdl_states_merge['Irrigation (acre-ft/acre)'] == '(D)',
                                               nir_select[(nir_select['Geography']=='United States (2013)')]['Irrigation (acre-ft/acre)'], cdl_states_merge['Irrigation (acre-ft/acre)'])
@@ -633,13 +637,16 @@ cdl_states_all = cdl_states_all.dropna(subset=['State_Name'])  # Drop rows witho
 cdl_states_all.NLDAS_ID.isnull().values.any()
 
 #### Calculate bias-correction surface water factor
-# Load in supply availability from historical/baseline WM run (see project wm_netcdf/hist_water_availability_abm.py for processing)
-#hist_supply = pd.read_csv('data/abm_hist_supply_avail.csv')
-hist_supply = pd.read_csv('data/abm_hist_supply_avail_usda.csv')
+
+# Generate csv file to process into netCDF files for warm-up/baseline MOSART-WM run (see project wm_netcdf/hist_demand_wm_usda.py for processing of csv file)
 aggregation_functions = {'sw_irrigation_vol': 'sum','gw_irrigation_vol': 'sum'}
 sw_irrigation_nldas = cdl_states_all.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
 sw_irrigation_nldas['sw_irrigation_m3s'] = sw_irrigation_nldas['sw_irrigation_vol'] / 25583.64
-sw_irrigation_nldas[['NLDAS_ID','sw_irrigation_m3s']].to_csv('hist_demand_for_ncdf_nirnon0.csv')
+sw_irrigation_nldas[['NLDAS_ID','sw_irrigation_m3s']].to_csv('hist_demand_for_ncdf_nirnon0v2.csv')
+
+# Load in supply availability from historical/baseline WM run (see project wm_netcdf/hist_water_availability_abm.py for processing)
+#hist_supply = pd.read_csv('data/abm_hist_supply_avail.csv')
+hist_supply = pd.read_csv('data/abm_hist_supply_avail_usda.csv')
 sw_irrigation_nldas = pd.merge(sw_irrigation_nldas, hist_supply[['NLDAS_ID', 'WRM_SUPPLY_acreft']], on='NLDAS_ID', how='left') # join table above with state designations
 sw_irrigation_nldas['sw_avail_bias_corr'] = sw_irrigation_nldas['sw_irrigation_vol'] - sw_irrigation_nldas['WRM_SUPPLY_acreft']
 
@@ -650,7 +657,7 @@ cdl_states_final = cdl_states_all[['NLDAS_ID','GCAM_name','CDL_id','value', 'ERS
                                    'area_irrigated_gw','area_irrigated_sw', 'Irrigation (acre-ft/acre)']]
 
 # Export to CSV
-cdl_states_final.to_csv('cdl_states_final_20201005.csv')
+cdl_states_final.to_csv('cdl_states_final_20201028.csv')
 
 # Determine land constraint for PMP stage 1 calibration
 cdl_states_total['avail_acre'] = cdl_states_total['avail'] / 43560
@@ -661,5 +668,5 @@ cdl_states_total['avail_acre_minus_nonirr_irrgw'] = cdl_states_total['avail_acre
 cdl_states_total['max_land_constr'] = cdl_states_total[["avail_acre_minus_nonirr_irrgw", "area_irrigated_sw"]].max(axis=1)
 cdl_states_total['max_land_constr'] = cdl_states_total['max_land_constr'] * 1000  # All land areas in PMP multiplied by 1000 for precision/rounding
 max_land_constr = cdl_states_total[['NLDAS_ID','max_land_constr']]
-max_land_constr = max_land_constr.fillna(0)
-max_land_constr.to_csv('max_land_constr.csv')
+max_land_constr = max_land_constr.dropna()
+max_land_constr.to_csv('max_land_constr_20201102.csv')
