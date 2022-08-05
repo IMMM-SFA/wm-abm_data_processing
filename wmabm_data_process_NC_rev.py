@@ -43,7 +43,8 @@ nldas_lookup = pd.read_csv('data/nldas_states_counties_regions.csv')
 water_perc = pd.read_csv('data/water_proportions.csv')
 
 # Load USDA Irrigation data on groundwater costs and surface water costs (at State level)
-water_cost = pd.read_csv('data/water_costs.csv')
+# water_cost = pd.read_csv('data/water_costs.csv')
+water_cost = pd.read_csv('data/water_costs_rev20220309.csv')
 
 #### Step 3 - Conduct Additional Processing of External Data
 
@@ -97,11 +98,12 @@ for index, row in water_perc.iterrows():
 water_perc['SW Total'] = water_perc['SW (off-farm)'] + water_perc['SW (Farm)']
 
 # Merge irrigation water costs and irrigation water source tables
-water_perc = pd.merge(water_perc, water_cost,on='State',how='left')
+# water_perc = pd.merge(water_perc, water_cost,on='State',how='left')
+water_perc = pd.merge(water_perc, water_cost[['State','gw_cost_est_$_acft','sw_cost_est_$_acft']],on='State',how='left')
 
 # Calculate adjusted cost for all surface water sources assuming that on-farm surface water is free (do USDA SW costs
 # include pumping costs?)
-water_perc['SW cost adj'] = (water_perc['SW (off-farm)'] / (water_perc['SW (Farm)'] + water_perc['SW (off-farm)'])) * water_perc['SW cost']
+# water_perc['SW cost adj'] = (water_perc['SW (off-farm)'] / (water_perc['SW (Farm)'] + water_perc['SW (off-farm)'])) * water_perc['SW cost']
 
 # Merge CDL data with associated geographies (USDA Agricultural Regions and States)
 cdl_states = pd.merge(cdl, nldas_lookup[['NLDAS_ID','ERS_region','State','State_Name']],on='NLDAS_ID',how='left')
@@ -607,12 +609,14 @@ for state in cdl_states_all.State_Name.unique():
             scaling_factor = 0
         cdl_states_all.loc[(cdl_states_all.State_Name==state) & (cdl_states_all.GCAM_name==crop), 'siebert_total_irr_area_scaled'] = cdl_states_all['siebert_total_irr_area'] * scaling_factor
 
+
+# JY RESTART HERE - MAKE SURE AREAS ADD UP TO TOTAL IRRIGATED AREA
 cdl_states_all['area_irrigated_gw'] = cdl_states_all['siebert_total_irr_area_scaled'] * cdl_states_all['aeigw_pct'] / 100.0
 cdl_states_all['area_irrigated_sw'] = cdl_states_all['siebert_total_irr_area_scaled'] * cdl_states_all['aeisw_pct'] / 100.0
+cdl_states_all['area_irrigated'] = cdl_states_all['area_irrigated_gw'] + cdl_states_all['area_irrigated_sw']
 
-
-
-cdl_states_all = pd.merge(cdl_states_all, water_perc[['State','Groundwater','SW Total', 'GW cost', 'SW cost adj']],left_on='State_Name', right_on='State',how='left')
+# cdl_states_all = pd.merge(cdl_states_all, water_perc[['State','Groundwater','SW Total', 'GW cost', 'SW cost adj']],left_on='State_Name', right_on='State',how='left')
+cdl_states_all = pd.merge(cdl_states_all, water_perc[['State','gw_cost_est_$_acft','sw_cost_est_$_acft']],left_on='State_Name', right_on='State',how='left')
 # cdl_states_all['area_irrigated_gw'] = cdl_states_all['area_irrigated'] * cdl_states_all['Groundwater']
 # cdl_states_all['area_irrigated_sw'] = cdl_states_all['area_irrigated'] * cdl_states_all['SW Total']
 cdl_states_all['gw_irrigation_vol'] = cdl_states_all['area_irrigated_gw'] * cdl_states_all['Irrigation (acre-ft/acre)'] # GW irrigation volume in acre-ft
@@ -626,35 +630,68 @@ cdl_states_all['perceived_cost'] = cdl_states_all['total costs'] - cdl_states_al
 # For negative profits, adjust total land cost to assume profit is zero
 cdl_states_all['profit'] = (cdl_states_all['yield']*cdl_states_all['price']) - cdl_states_all['perceived_cost']
 # !JY: consider adding 10 percent to below?
-cdl_states_all['perceived_cost_adj'] = np.where(cdl_states_all['profit'] < 1, cdl_states_all['perceived_cost'] + cdl_states_all['profit'] - 1, cdl_states_all['perceived_cost'])
+# cdl_states_all['perceived_cost_adj'] = np.where(cdl_states_all['profit'] < 1, cdl_states_all['perceived_cost'] + cdl_states_all['profit'] - 1, cdl_states_all['perceived_cost'])
+# cdl_states_all['profit_adj'] = (cdl_states_all['yield']*cdl_states_all['price']) - cdl_states_all['perceived_cost_adj']
+
+# !JY: alternate version, min is 10 percent profit margin
+cdl_states_all['perceived_cost_adj'] = np.where(cdl_states_all['profit'] < (cdl_states_all['perceived_cost'] * .10), (cdl_states_all['yield'] * cdl_states_all['price']) / 1.1, cdl_states_all['perceived_cost'])
 cdl_states_all['profit_adj'] = (cdl_states_all['yield']*cdl_states_all['price']) - cdl_states_all['perceived_cost_adj']
-cdl_states_all['land_only_costs'] = cdl_states_all['perceived_cost_adj'] - cdl_states_all['GW cost'] - cdl_states_all['SW cost adj']
 
-# For GW + SW costs greater than total costs, assume statewide average value of (GW + SW) / total
-states_adj = cdl_states_all[(cdl_states_all['land_only_costs'] < 0)]
-cdl_states_all['gw cost perc'] = cdl_states_all['GW cost'] / cdl_states_all['perceived_cost_adj']
-cdl_states_all['sw cost perc'] = cdl_states_all['SW cost adj'] / cdl_states_all['perceived_cost_adj']
-states_list = states_adj.State_Name.unique()
-cdl_states_all['GW cost adj'] = 99999
-cdl_states_all['SW cost adj 2'] = 99999
-states_perc = []
+# Estimate gw and sw costs (in $/acre)
+cdl_states_all['gw_cost_est_$_acre'] = cdl_states_all['gw_cost_est_$_acft'] * cdl_states_all['Irrigation (acre-ft/acre)']
+cdl_states_all['sw_cost_est_$_acre'] = cdl_states_all['sw_cost_est_$_acft'] * cdl_states_all['Irrigation (acre-ft/acre)']
+# Adjust gw and sw costs when greater than total perceived costs (to 90 percent of total perceived costs)
+cdl_states_all['gw_cost_est_$_acre_adj'] = np.where(cdl_states_all['gw_cost_est_$_acre'] >= cdl_states_all['perceived_cost_adj'], cdl_states_all['perceived_cost_adj'] * .90, cdl_states_all['gw_cost_est_$_acre'])
+cdl_states_all['sw_cost_est_$_acre_adj'] = np.where(cdl_states_all['sw_cost_est_$_acre'] >= cdl_states_all['perceived_cost_adj'], cdl_states_all['perceived_cost_adj'] * .90, cdl_states_all['sw_cost_est_$_acre'])
+cdl_states_all['gw_cost_est_$_acft_adj'] = cdl_states_all['gw_cost_est_$_acre_adj'] / cdl_states_all['Irrigation (acre-ft/acre)']
+cdl_states_all['sw_cost_est_$_acft_adj'] = cdl_states_all['sw_cost_est_$_acre_adj'] / cdl_states_all['Irrigation (acre-ft/acre)']
+# cdl_states_all['gw_irrigation_vol'] = cdl_states_all.gw_irrigation_vol.astype(float)
+# cdl_states_all['sw_irrigation_vol'] = cdl_states_all.sw_irrigation_vol.astype(float)
+# cdl_states_all['total_irrigation_vol'] = cdl_states_all['gw_irrigation_vol'] + cdl_states_all['sw_irrigation_vol']
+# cdl_states_all['total_irrigation_water_cost_$'] = (cdl_states_all['gw_cost_est_$_acre_adj'] * cdl_states_all['gw_irrigation_vol']) + (cdl_states_all['sw_cost_est_$_acre_adj'] * cdl_states_all['sw_irrigation_vol'])
+# cdl_states_all['total_irrigation_water_cost_$'] = cdl_states_all['total_irrigation_water_cost_$'].astype(float)
+# cdl_states_all['avg_w_cost_est_$_acre'] = cdl_states_all['total_irrigation_water_cost_$'].div(cdl_states_all['total_irrigation_vol'])
+# cdl_states_all['avg_w_cost_est_$_acre'] = np.where(np.isnan(cdl_states_all['avg_w_cost_est_$_acre']), (cdl_states_all['gw_cost_est_$_acre_adj'] + cdl_states_all['sw_cost_est_$_acre_adj'])/2.0,
+#                                                    cdl_states_all['avg_w_cost_est_$_acre'])
 
-for state in states_list:
-    gw_cost_perc_df = cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['GW cost'] / cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['perceived_cost_adj']
-    sw_cost_perc_df = cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['SW cost adj'] / cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['perceived_cost_adj']
-    gw_cost_perc = gw_cost_perc_df.mean()
-    sw_cost_perc = sw_cost_perc_df.mean()
-    if gw_cost_perc + sw_cost_perc > 1:
-        print(state)
-    cdl_states_all.loc[(cdl_states_all['land_only_costs']<0) & (cdl_states_all['State_Name']==state), 'GW cost adj'] = gw_cost_perc * cdl_states_all['perceived_cost_adj']
-    cdl_states_all.loc[(cdl_states_all['land_only_costs']<0) & (cdl_states_all['State_Name']==state), 'SW cost adj 2'] = sw_cost_perc * cdl_states_all['perceived_cost_adj']
+# Estimate land-only costs (in $/acre)
+# cdl_states_all['land_only_costs'] = cdl_states_all['perceived_cost_adj'] - cdl_states_all['avg_w_cost_est_$_acre']
+cdl_states_all['land_only_costs'] = np.where(cdl_states_all['gw_cost_est_$_acre_adj'] > cdl_states_all['sw_cost_est_$_acre_adj'], cdl_states_all['perceived_cost_adj'] - cdl_states_all['gw_cost_est_$_acre_adj'],
+                                             cdl_states_all['perceived_cost_adj'] - cdl_states_all['sw_cost_est_$_acre_adj'])
 
-cdl_states_all.loc[(cdl_states_all['GW cost adj']==99999), 'GW cost adj'] = cdl_states_all['GW cost']
-cdl_states_all.loc[(cdl_states_all['SW cost adj 2']==99999), 'SW cost adj 2'] = cdl_states_all['SW cost adj']
 
-cdl_states_all['land_only_costs'] = cdl_states_all['perceived_cost_adj'] - cdl_states_all['GW cost adj'] - cdl_states_all['SW cost adj 2']
+# cdl_states_all['land_only_costs'] = cdl_states_all['perceived_cost_adj'] - cdl_states_all['GW cost'] - cdl_states_all['SW cost adj']
+#
+# # For GW + SW costs greater than total costs, assume statewide average value of (GW + SW) / total
+# states_adj = cdl_states_all[(cdl_states_all['land_only_costs'] < 0)]
+# cdl_states_all['gw cost perc'] = cdl_states_all['GW cost'] / cdl_states_all['perceived_cost_adj']
+# cdl_states_all['sw cost perc'] = cdl_states_all['SW cost adj'] / cdl_states_all['perceived_cost_adj']
+# states_list = states_adj.State_Name.unique()
+# cdl_states_all['GW cost adj'] = 99999
+# cdl_states_all['SW cost adj 2'] = 99999
+# states_perc = []
+#
+# for state in states_list:
+#     gw_cost_perc_df = cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['GW cost'] / cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['perceived_cost_adj']
+#     sw_cost_perc_df = cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['SW cost adj'] / cdl_states_all[(cdl_states_all['State_Name']==state) & (cdl_states_all['land_only_costs']>=0)]['perceived_cost_adj']
+#     gw_cost_perc = gw_cost_perc_df.mean()
+#     sw_cost_perc = sw_cost_perc_df.mean()
+#     if gw_cost_perc + sw_cost_perc > 1:
+#         print(state)
+#     cdl_states_all.loc[(cdl_states_all['land_only_costs']<0) & (cdl_states_all['State_Name']==state), 'GW cost adj'] = gw_cost_perc * cdl_states_all['perceived_cost_adj']
+#     cdl_states_all.loc[(cdl_states_all['land_only_costs']<0) & (cdl_states_all['State_Name']==state), 'SW cost adj 2'] = sw_cost_perc * cdl_states_all['perceived_cost_adj']
+#
+# cdl_states_all.loc[(cdl_states_all['GW cost adj']==99999), 'GW cost adj'] = cdl_states_all['GW cost']
+# cdl_states_all.loc[(cdl_states_all['SW cost adj 2']==99999), 'SW cost adj 2'] = cdl_states_all['SW cost adj']
+#
+# cdl_states_all['land_only_costs'] = cdl_states_all['perceived_cost_adj'] - cdl_states_all['GW cost adj'] - cdl_states_all['SW cost adj 2']
+#
+# cdl_states_all['profit_test'] = (cdl_states_all['yield']*cdl_states_all['price']) - cdl_states_all['land_only_costs'] - cdl_states_all['GW cost adj'] - cdl_states_all['SW cost adj 2']
 
-cdl_states_all['profit_test'] = (cdl_states_all['yield']*cdl_states_all['price']) - cdl_states_all['land_only_costs'] - cdl_states_all['GW cost adj'] - cdl_states_all['SW cost adj 2']
+
+
+
+
 
 #### Step 8 - Drop nulls, extract relevant columns, and export to csv
 # Drop nulls and fill in missing values (99999s)
@@ -678,23 +715,67 @@ sw_irrigation_nldas['sw_avail_bias_corr'] = sw_irrigation_nldas['sw_irrigation_v
 
 
 # Extract only relevant columns
+# cdl_states_final = cdl_states_all[['NLDAS_ID','GCAM_name','CDL_id','value', 'ERS_region', 'State_Name', 'land_only_costs', 'price',
+#                                      'GW cost adj', 'SW cost adj 2', 'yield', 'Yield Irrigated', 'Yield Non-Irrigated', 'area_irrigated', 'area_nonirrigated',
+#                                    'area_irrigated_gw','area_irrigated_sw', 'Irrigation (acre-ft/acre)']]
+
 cdl_states_final = cdl_states_all[['NLDAS_ID','GCAM_name','CDL_id','value', 'ERS_region', 'State_Name', 'land_only_costs', 'price',
-                                     'GW cost adj', 'SW cost adj 2', 'yield', 'Yield Irrigated', 'Yield Non-Irrigated', 'area_irrigated', 'area_nonirrigated',
-                                   'area_irrigated_gw','area_irrigated_sw', 'Irrigation (acre-ft/acre)']]
+                                   'yield', 'Yield Irrigated', 'Yield Non-Irrigated', 'area_irrigated', 'area_nonirrigated',
+                                   'area_irrigated_gw','area_irrigated_sw', 'Irrigation (acre-ft/acre)','gw_cost_est_$_acft_adj','sw_cost_est_$_acft_adj']]
 
 # Export to CSV
-#cdl_states_final.to_csv('cdl_states_final_20201028.csv')
-cdl_states_final.to_csv('cdl_states_final_20220223.csv')
+# cdl_states_final.to_csv('cdl_states_final_20201028.csv')
+# cdl_states_final.to_csv('cdl_states_final_20220223.csv')
+# cdl_states_final.to_csv('cdl_states_final_20220310.csv')
+# cdl_states_final.to_csv('cdl_states_final_20220311.csv')
+cdl_states_final.to_csv('cdl_states_final_20220323.csv')
+
+# Determine water constraint for PMP stage 1 calibration
+cdl_states_all['gw_cost_est_$_acft_adj'] = cdl_states_all['gw_cost_est_$_acft_adj'].astype(float)
+cdl_states_all['sw_cost_est_$_acft_adj'] = cdl_states_all['sw_cost_est_$_acft_adj'].astype(float)
+aggregation_functions = {'gw_cost_est_$_acft_adj': 'mean','sw_cost_est_$_acft_adj': 'mean', 'gw_irrigation_vol': 'sum', 'sw_irrigation_vol': 'sum'}
+calib_water_constraints = cdl_states_all.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
+calib_water_constraints['gw_constraint_calc'] = 9999999999
+calib_water_constraints['sw_constraint_calc'] = 9999999999
+calib_water_constraints.loc[(calib_water_constraints['gw_cost_est_$_acft_adj'] < calib_water_constraints['sw_cost_est_$_acft_adj']), 'gw_constraint_calc'] = calib_water_constraints['gw_irrigation_vol']
+calib_water_constraints.loc[(calib_water_constraints['sw_cost_est_$_acft_adj'] < calib_water_constraints['gw_cost_est_$_acft_adj']), 'sw_constraint_calc'] = calib_water_constraints['sw_irrigation_vol']
+gw_constraint_dict = calib_water_constraints['gw_constraint_calc'].to_dict()
+sw_constraint_dict = calib_water_constraints['sw_constraint_calc'].to_dict()
+with open('gw_calib_constraints_202203319_protocol2.p', 'wb') as handle:
+    pickle.dump(gw_constraint_dict, handle, protocol=2)
+with open('sw_calib_constraints_202203319_protocol2.p', 'wb') as handle:
+    pickle.dump(sw_constraint_dict, handle, protocol=2)
+
+# alternate version
+aggregation_functions = {'gw_irrigation_vol': 'sum', 'sw_irrigation_vol': 'sum'}
+calib_water_constraints = cdl_states_all.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
+calib_water_constraints['gw_constraint_calc'] = calib_water_constraints['gw_irrigation_vol']
+calib_water_constraints['sw_constraint_calc'] = calib_water_constraints['sw_irrigation_vol']
+gw_constraint_dict = calib_water_constraints['gw_constraint_calc'].to_dict()
+sw_constraint_dict = calib_water_constraints['sw_constraint_calc'].to_dict()
+with open('gw_calib_constraints_20220401_protocol2.p', 'wb') as handle:
+    pickle.dump(gw_constraint_dict, handle, protocol=2)
+with open('sw_calib_constraints_20220401_protocol2.p', 'wb') as handle:
+    pickle.dump(sw_constraint_dict, handle, protocol=2)
 
 # Determine land constraint for PMP stage 1 calibration
 cdl_states_total['avail_acre'] = cdl_states_total['avail'] / 43560
-aggregation_functions = {'area_irrigated_gw': 'sum','area_nonirrigated': 'sum','area_irrigated_sw': 'sum'}
+aggregation_functions = {'area_irrigated_gw': 'sum','area_nonirrigated': 'sum','area_irrigated_sw': 'sum','area_irrigated': 'sum'}
 cdl_states_irr_area_sw = cdl_states_final.groupby(['NLDAS_ID'], as_index=False).aggregate(aggregation_functions)
 cdl_states_total = pd.merge(cdl_states_total, cdl_states_irr_area_sw, on='NLDAS_ID', how='left')
-cdl_states_total['avail_acre_minus_nonirr_irrgw'] = cdl_states_total['avail_acre'] - cdl_states_total['area_irrigated_gw'] - cdl_states_total['area_nonirrigated']
-cdl_states_total['max_land_constr'] = cdl_states_total[["avail_acre_minus_nonirr_irrgw", "area_irrigated_sw"]].max(axis=1)
+#cdl_states_total['avail_acre_minus_nonirr_irrgw'] = cdl_states_total['avail_acre'] - cdl_states_total['area_irrigated_gw'] - cdl_states_total['area_nonirrigated']
+cdl_states_total['avail_acre_minus_nonirr_irrgw'] = cdl_states_total['avail_acre'] - cdl_states_total['area_nonirrigated'] # JY revised revision to include GW
+#cdl_states_total['max_land_constr'] = cdl_states_total[["avail_acre_minus_nonirr_irrgw", "area_irrigated_sw"]].max(axis=1)
+cdl_states_total['max_land_constr'] = cdl_states_total[["avail_acre_minus_nonirr_irrgw", "area_irrigated"]].max(axis=1) # JY revised revision to include GW
 cdl_states_total['max_land_constr'] = cdl_states_total['max_land_constr'] * 1000  # All land areas in PMP multiplied by 1000 for precision/rounding
 max_land_constr = cdl_states_total[['NLDAS_ID','max_land_constr']]
 max_land_constr = max_land_constr.dropna()
 #max_land_constr.to_csv('max_land_constr_20201102.csv')
-max_land_constr.to_csv('max_land_constr_20220223.csv')
+#max_land_constr.to_csv('max_land_constr_20220223.csv')
+max_land_constr.to_csv('max_land_constr_20220307.csv')
+
+temp = max_land_constr.reset_index()
+temp_dict = temp['max_land_constr'].to_dict()
+import pickle
+with open('max_land_constr_20220307_protocol2.p', 'wb') as handle:
+    pickle.dump(temp_dict, handle, protocol=2)
