@@ -16,7 +16,7 @@ pd.set_option('display.expand_frame_repr', False)  # Modifies pandas settings to
 
 # Load CDL observed crop data as a pandas dataframe. CDL data has been aggregated to 1/8 degree resolution and assigned
 # to GCAM crop categories as a pre-processing step in GIS.
-cdl = pd.read_csv('data/all_nldas_cdl_data_v3.txt')
+cdl = pd.read_csv('../data/all_nldas_cdl_data_v3.txt')
 
 #cdl_states = pd.read_csv('cdl_regions_join.csv')
 
@@ -33,14 +33,14 @@ nir = pd.read_excel('data/usda irrigation water requirement.xlsx')
 
 # Load lookup table that geographically associates NLDAS cells, states, and USDA agricultural regions. The table was
 # pre-processed by spatial joining shapefiles in GIS
-nldas_lookup = pd.read_csv('data/nldas_states_counties_regions.csv')
+nldas_lookup = pd.read_csv('../data/nldas_states_counties_regions.csv')
 
 # Load USDA Irrigation data on irrigation water by source (groundwater, surface water, off-farm surface water).
 # The data is provided at State level.
-water_perc = pd.read_csv('data/water_proportions.csv')
+water_perc = pd.read_csv('../data/water_proportions.csv')
 
 # Load USDA Irrigation data on groundwater costs and surface water costs (at State level)
-water_cost = pd.read_csv('data/water_costs.csv')
+water_cost = pd.read_csv('../data/water_costs.csv')
 
 #### Step 3 - Conduct Additional Processing of External Data
 
@@ -646,7 +646,7 @@ sw_irrigation_nldas[['NLDAS_ID','sw_irrigation_m3s']].to_csv('hist_demand_for_nc
 
 # Load in supply availability from historical/baseline WM run (see project wm_netcdf/hist_water_availability_abm.py for processing)
 #hist_supply = pd.read_csv('data/abm_hist_supply_avail.csv')
-hist_supply = pd.read_csv('data/abm_hist_supply_avail_usda.csv')
+hist_supply = pd.read_csv('../data/abm_hist_supply_avail_usda.csv')
 sw_irrigation_nldas = pd.merge(sw_irrigation_nldas, hist_supply[['NLDAS_ID', 'WRM_SUPPLY_acreft']], on='NLDAS_ID', how='left') # join table above with state designations
 sw_irrigation_nldas['sw_avail_bias_corr'] = sw_irrigation_nldas['sw_irrigation_vol'] - sw_irrigation_nldas['WRM_SUPPLY_acreft']
 
